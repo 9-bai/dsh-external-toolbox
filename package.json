@@ -60,10 +60,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/USER/dsh-external-toolbox.git"
+    "url": "git+https://github.com/9-bai/dsh-external-toolbox.git"
   },
-  "homepage": "https://github.com/USER/dsh-external-toolbox#readme",
+  "homepage": "https://github.com/9-bai/dsh-external-toolbox#readme",
   "bugs": {
-    "url": "https://github.com/USER/dsh-external-toolbox/issues"
+    "url": "https://github.com/9-bai/dsh-external-toolbox/issues"
   }
 }

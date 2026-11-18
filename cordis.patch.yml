@@ -1,0 +1,9 @@
+# dsh-external-toolbox bundle patch: inserts this plugin into a profile's roster.
+#
+# The row addresses the plugin by PACKAGE NAME: the node half (exports ".")
+# runs in the host process and owns the global hotkey helper plus the
+# /toolbox/latest route; the `dsh.client` declaration in package.json makes
+# the browser half (exports "./client") load as /plugins/dsh-external-toolbox/client.js.
+- insert:
+    - id: dsh-external-toolbox
+      name: 'dsh-external-toolbox'

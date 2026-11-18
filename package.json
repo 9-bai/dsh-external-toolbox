@@ -1,0 +1,69 @@
+{
+  "name": "dsh-external-toolbox",
+  "version": "0.2.0",
+  "description": "Selection capture for DeepSeek Harness, anywhere on Windows: one gesture picks up the text you just selected in any application and offers translate, explain, quote-into-DSH, save-to-vocabulary and copy in a floating card that never steals focus.",
+  "keywords": [
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "web",
+    "selection",
+    "translate",
+    "hotkey",
+    "windows"
+  ],
+  "type": "module",
+  "license": "MIT",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./icon": "./icon.png",
+    "./locale/*.json": "./locale/*.json",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "helper/capture.ps1",
+    "cordis.patch.yml",
+    "locale",
+    "icon.png",
+    "README.md",
+    "tools",
+    "LICENSE"
+  ],
+  "dsh": {
+    "client": {
+      "platform": "web"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "os": [
+    "win32"
+  ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2"
+  },
+  "dependencies": {
+    "msedge-tts": "^2.1.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/USER/dsh-external-toolbox.git"
+  },
+  "homepage": "https://github.com/USER/dsh-external-toolbox#readme",
+  "bugs": {
+    "url": "https://github.com/USER/dsh-external-toolbox/issues"
+  }
+}

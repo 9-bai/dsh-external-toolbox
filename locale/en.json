@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "External toolbox",
+    "description": "Select text in any Windows application and a small floating bar appears. Translate it in place, or send the quote into the DSH composer to ask about it. More selection tools will live here, not only translation. Auto-detects the direction between Chinese and English and can translate into other languages."
+  }
+}

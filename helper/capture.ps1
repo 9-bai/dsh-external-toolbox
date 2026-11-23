@@ -52,6 +52,7 @@ param(
   [switch]$NoRestoreClipboard,
   # CardTest only: keep the machine quiet.
   [switch]$SurfaceTest,
+  [switch]$FilterTest,
   [switch]$NoSpeak
 )
 
@@ -2021,11 +2022,70 @@ function Test-ConsoleForeground {
   return ($cls -eq "ConsoleWindowClass" -or $cls -eq "CASCADIA_HOSTING_WINDOW_CLASS" -or $cls -eq "mintty")
 }
 
+# Rubber-band selection in a PCB/schematic editor picks objects, not text, so a
+# click there must not open the pill. These are the editors people actually use
+# on Windows; the match is a substring test on the process name.
+$script:QUIET_PROCS = @(
+  "pcbnew", "eeschema", "kicad", "altium", "dxp", "x2", "pads", "powerpcb",
+  "allegro", "apldesigner", "designspark", "proteus", "multsim", "vivado", "quartus"
+)
+
+function Test-QuietApp {
+  $name = Get-ForegroundProcessName
+  if ([string]::IsNullOrWhiteSpace($name)) { return $false }
+  foreach ($proc in $script:QUIET_PROCS) {
+    if ($name -like ("*" + $proc + "*")) { return $true }
+  }
+  return $false
+}
+
+# Not every selection is text: object picks in CAD tools hand us a bare
+# designator such as "R12", and a test sweep hands us a stray digit.
+# Inside an editor that selects objects, only prose is interesting: a reference
+# designator or a net name is one bare token, while real text has spaces or CJK.
+function Test-ProseLike([string]$Text) {
+  $trim = $Text.Trim()
+  if ($trim -match "\s") { return $true }
+  if ($trim -match "[\p{IsCJKUnifiedIdeographs}\p{IsHiragana}\p{IsKatakana}\p{IsHangulSyllables}]") { return $true }
+  return $false
+}
+
+function Test-WorthShowing([string]$Text) {
+  $trim = $Text.Trim()
+  if ($trim.Length -lt 3) { return $false }
+  $letters = ([regex]::Matches($trim, "[\p{L}]")).Count
+  if ($letters -lt 2) { return $false }
+  # A lone reference designator is a picked component, not a word to look up.
+  if ($trim -match "^[\p{Lu}\p{Ll}]{1,3}[0-9]{1,4}$") { return $false }
+  return $true
+}
+
 function Show-AutoCapture {
   param([string]$Text)
   if ([string]::IsNullOrWhiteSpace($Text)) { return }
   $Text = $Text -replace "`r`n", "`n"
   if ($Text.Trim().Length -lt 2) { return }
+  # A whole-document Ctrl+A is a mis-gesture, not a selection to act on.
+  if ($Text.Length -gt 20000) {
+    Write-Trace ("auto skip huge chars=" + $Text.Length + " app=" + (Get-ForegroundProcessName))
+    return
+  }
+  if (-not (Test-WorthShowing $Text)) {
+    Write-Trace ("auto skip not-text chars=" + $Text.Length + " app=" + (Get-ForegroundProcessName))
+    return
+  }
+  # Object-picking editors still get prose: dropping the pill there entirely was
+  # wrong, since people do select real text in a schematic.
+  # Dragging a symbol in KiCad copies that symbol to the clipboard, which lands
+  # here as prose. Only a real UI Automation selection counts in those editors.
+  if ((Test-QuietApp) -and ($script:lastVia -ne "uia")) {
+    Write-Trace ("auto skip quiet clipboard app=" + (Get-ForegroundProcessName) + " chars=" + $Text.Length)
+    return
+  }
+  if ((Test-QuietApp) -and -not (Test-ProseLike $Text)) {
+    Write-Trace ("auto skip quiet app " + (Get-ForegroundProcessName) + " chars=" + $Text.Length)
+    return
+  }
   # A whole-page Ctrl+A would otherwise pop a 60k character card nobody asked for.
   if ($Text.Length -gt $script:MAX_CAPTURE_CHARS) { Write-Trace ("capture truncated " + [string]$Text.Length); $Text = $Text.Substring(0, $script:MAX_CAPTURE_CHARS) + "..." }
   if ($Text -eq $script:autoShown -and ((Get-Date) - $script:autoShownAt).TotalSeconds -lt 1.2) { return }
@@ -2075,6 +2135,11 @@ function Get-AutoSelectionText {
   } catch {
     $text = $null
   }
+  if ([string]::IsNullOrWhiteSpace($text)) {
+    $script:lastVia = ""
+  } else {
+    $script:lastVia = "uia"
+  }
   # Ctrl+C copies in an editor but interrupts a shell, so terminals get
   # Ctrl+Insert: the copy chord that never reaches the program. When even that
   # yields nothing we stay quiet for a few seconds instead of poking again.
@@ -2082,7 +2147,11 @@ function Get-AutoSelectionText {
     $keys = "^c"
     if ((Test-KeyboardSurface) -or (Test-ConsoleForeground)) { $keys = "^{INSERT}" }
     try { $text = Get-ClipboardSelectionText -Keys $keys } catch { $text = $null }
-    if ([string]::IsNullOrWhiteSpace($text)) { $script:clipBlockedUntil = (Get-Date).AddSeconds(3) }
+    if ([string]::IsNullOrWhiteSpace($text)) {
+      $script:clipBlockedUntil = (Get-Date).AddSeconds(3)
+    } else {
+      $script:lastVia = "clipboard"
+    }
   }
   return $text
 }
@@ -2094,6 +2163,7 @@ function Get-AutoSelectionText {
 # fire Ctrl+C into their tool and empty the clipboard they are about to use.
 $script:SKIP_PROCS = @("pixpin", "snipaste", "sharex", "screentogif", "snippingtool", "screenclippinghost", "greenshot", "faststone")
 
+$script:lastVia = ""
 $script:fgProcPid = 0
 $script:fgProcName = ""
 
@@ -2849,6 +2919,14 @@ function ConvertTo-Hotkey([string]$Spec) {
 
 # ---------------------------------------------------------------- self test
 
+
+if ($FilterTest) {
+  $samples = @("R12", "U1", "1", "pcb", "a b", "C3 10uF", "Hello world", "Rain_Total_mm", "--", "12", "VCC", "See note 4", "Net- (U2.5A)")
+  foreach ($sample in $samples) {
+    Write-Json @{ type = "filter"; text = $sample; show = (Test-WorthShowing $sample); prose = (Test-ProseLike $sample); quiet = (Test-QuietApp); app = (Get-ForegroundProcessName) }
+  }
+  exit 0
+}
 
 if ($SurfaceTest) {
   # Which clipboard-fallback guard fires for whatever is in front right now.

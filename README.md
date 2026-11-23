@@ -188,3 +188,37 @@ helper sends `Ctrl+Insert` instead (a copy binding that never reaches the shell)
 When the terminal hides its selection from UI Automation and that chord still
 produces nothing, capture gives up and the 3 second cooldown keeps further
 gestures from poking the shell.
+## Why there are almost no dependencies
+
+The only runtime dependency is `ws`. Speech uses Edge's online voices through
+`tools/say.mjs`, with the `Sec-MS-GEC` query token computed in
+`tools/sec-ms-gec.mjs` (ported from `msedge-tts`, MIT — see
+`tools/LICENSE-msedge-tts.txt`).
+
+That vendoring is deliberate: `msedge-tts` (and any package with an
+`install`/`preinstall`/`postinstall` script) makes `dsh plugin add` fail. The
+plugin manager runs pnpm with build scripts disabled, pnpm reports
+`ERR_PNPM_IGNORED_BUILDS`, pnpm exits 1, and the marketplace surfaces it as
+`安装失败·API 200`. `ws` ships no scripts, so installs stay clean.
+### When the pill stays quiet
+
+Two guards keep object-picking out of the way:
+
+- **Editors that select objects, not text** — `pcbnew`, `eeschema`, `kicad`,
+  `altium`, `dxp`, `pads`, `allegro`, `proteus`, `vivado`, `quartus` and friends
+  are listed in `$script:QUIET_PROCS`; a rubber-band there never opens the pill.
+- **Selections that are not text** — anything shorter than 3 characters, with
+  fewer than two letters, or shaped like a bare reference designator (`R12`,
+  `U1`) is ignored.
+
+`-FilterTest` prints the verdict for a set of sample strings, useful when tuning
+the heuristic.
+### Moving objects vs selecting text
+
+Dragging a symbol in KiCad ends with the app copying that symbol to the
+clipboard, so the clipboard fallback used to hand us a paragraph of "text" and
+pop the pill on every component move. Inside an object-picking editor only a
+real UI Automation selection counts now; the clipboard fallback stays disabled
+there (other apps keep it, since old `EDIT` controls have no `TextPattern`).
+
+Log line when it declines: `auto skip quiet clipboard app=<proc> chars=<n>`.

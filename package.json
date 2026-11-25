@@ -63,7 +63,12 @@
     "url": "git+https://github.com/9-bai/dsh-external-toolbox.git"
   },
   "homepage": "https://github.com/9-bai/dsh-external-toolbox#readme",
+  "author": {
+    "name": "9-bai",
+    "email": "1252159033@qq.com"
+  },
   "bugs": {
-    "url": "https://github.com/9-bai/dsh-external-toolbox/issues"
+    "url": "https://github.com/9-bai/dsh-external-toolbox/issues",
+    "email": "1252159033@qq.com"
   }
 }

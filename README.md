@@ -1,224 +1,80 @@
-# dsh-external-toolbox（外部工具箱）
+# 外部工具箱（dsh-external-toolbox）
 
-在任意 Windows 程序里选中一段文字 → 光标旁浮出一小条工具条 → 就地翻译，或把原文引用进 DSH 输入框继续提问。
-不限于翻译：后续的取词类动作也会挂在这条工具条上。
+在**任何 Windows 程序**里选中一段文字，光标旁边就会浮出一小条工具条：翻译、解释、引用到 DSH 的新会话、存进生词本、或者直接复制。
 
-## 用法
+不用切窗口，浮窗也不抢焦点——选完就看，看完就走。
 
-- **不用快捷键**：鼠标拖选 / 双击选词 / Ctrl+A / Shift+方向键选中后，约 0.2 秒弹出小工具条。
-- 小工具条只有「翻译 / 提问 / 关闭」。点「翻译」才弹出完整卡片（原文 + 译文 + 复制译文），此时请求才真正发给模型，省 token。
-- **Esc** 关闭卡片 / 工具条 / 语言菜单（由低级键盘钩子截获，不会传给下面的程序）。
-- 兜底热键 **Ctrl+Alt+Q**（自动弹卡失灵时用）。
-- 「提问」会把选区以引用块预填进 DSH 的 composer，并把 DSH 窗口唤到前台。
+## 怎么用
 
-## 语言
+选中文字的方式都行：**鼠标拖选**、**双击选词**、**Ctrl+A**、**Shift+方向键**。松手约 0.2 秒后弹出小工具条：
 
-- 默认 **AUTO**：中日韩文本译成英文，其余（英文/西文/数字）译成中文。
-- 卡片右上角下拉框可固定目标语言：AUTO / ZH / EN / JA / KO / ES / FR / DE / RU / PT / IT；切换后已有译文会立刻重译。
+`翻译` · `解释` · `引用` · `生词` · `复制`
 
-## 组成
+- **翻译**：弹出卡片，上方是原文，下方是译文；内容长可以滚轮滑。
+- **解释**：同样一栏卡片，但给的是解释而不是译文——源码给代码级走读，报错给原因和改法，术语给两句定义。
+- **引用**：把选区作为引用块填进 DSH 的输入框，并新开一个会话。
+- **生词**：打开生词本复习窗（见下）。
+- **复制**：把原文放回剪贴板，工具条自动收起——适合把别处的文字搬到别处去。
 
-| 文件 | 作用 |
+卡片里还能逐栏点 `▶` 朗读，`收藏` 存进生词本，`复制` 取当前内容（如果你在卡片里选中了一段，复制的是选中部分）。
+
+不想要时按 **Esc** 关闭卡片、工具条和语言菜单（这个 Esc 不会传给下面的程序）。
+
+## 目标语言
+
+卡片右上角是语言下拉框，默认 **AUTO**：
+
+- 中文 / 日文 / 韩文 → 译成英文
+- 英文、其它西文、数字 → 译成中文
+
+想固定就点开选 `ZH / EN / JA / KO / ES / FR / DE / RU / PT / IT`。切换后已有的译文会立刻按新目标重译。
+
+`解释` 不受语言影响：AUTO 时用中文解释。
+
+## 生词本
+
+点 `收藏` 时，如果原文是一句话、而你在原文栏里选中了其中一个词，存的就是**那个词**，整句作为上下文一起保存——这样条目记的是「它在这句话里的意思」。
+
+生词本的复习窗按**主动回忆 + 遗忘曲线**工作：只显示单词，你先自己想，点 `看答案` 才显示释义，然后评三档：
+
+| 评价 | 下次出现 |
 | --- | --- |
-| `lib/index.js` | host 半边：注册 `/toolbox/latest`、`/toolbox/translate`、`/toolbox/beat`，拉起 helper 子进程 |
-| `lib/client.js` | 浏览器半边：轮询 latest，把选区填进 composer |
-| `helper/capture.ps1` | PowerShell 助手：全局鼠标/键盘钩子、UIA 取词、浮窗 UI、激活 DSH |
-| `locale/*.json` | 插件市场里显示的标题与描述 |
-| `icon.png` | 插件图标 |
+| 忘了 | 10 分钟后 |
+| 模糊 | 1 天后 |
+| 记得 | 1 天 → 3 天 → 之后每次按难度系数拉长，最长 120 天 |
 
-## 改代码时注意
+只出到期的词；没有到期的时候窗口会告诉你还剩几条。
 
-- `helper/capture.ps1` **必须保持纯 ASCII**（中文一律用码点：`U 0x5212, 0x8BCD`），否则 PowerShell 5.1 会按 GBK 解析而报语法错。
-- 改完 helper 要同时校验两层：`[Parser]::ParseFile($path)` 与 `ParseInput($here-string body)`。
-- 改 C# 块后跑一次 `-ActivateTest`，否则只在运行时暴露编译错误。
-- 临时测试脚本一律用 ASCII 路径 `D:\Document\deepseek-harness\dsh-select-translate\...`（中文路径在 ASCII 编码保存时会被写成 `????`）。
-## "Ask" opens a new session
+收藏时会顺便向模型要一份更细的词条（词性、释义、例句、译文、搭配），所以「看答案」看到的是一张完整的小卡片。以前存的词也会在第一次复习时补上。复习窗里的 `文件` 用记事本打开生词本，可以直接看/改全部记录。
 
-The browser half looks up the client service `uiWorkspace` (registered by
-`@deepseek-ai/dsh-client-ui-workspace`, the same object the sidebar's
-`session.new` shortcut calls) and invokes `startSession()`. The quote is then
-written into the composer of whatever session the seat re-mounts for.
-
-If that service is missing (other DSH builds), the client falls back to
-`history.pushState` on a `/session...` route and, failing that, writes into the
-current session's composer. `client apply uiWorkspace=startSession ...` lines in
-`%TEMP%\dsh-external-toolbox-host.log` show what the probe found at startup.
-## Actions
-
-The pill offers `翻译` / `解释` / `提问`; the card repeats the three plus a copy
-button, and the header's language menu picks the target language.
-
-Both text actions hit the same host handler:
+数据都在本机：
 
 ```
-GET /toolbox/run?id=<captureId>&task=translate|explain&to=<lang>
+%APPDATA%\dsh-external-toolbox\vocab.jsonl     每行一条记录（只追加）
+%APPDATA%\dsh-external-toolbox\生词本.md       同样的内容，可读版
 ```
 
-`/toolbox/translate` is kept for older helpers and always means `task=translate`.
-`to=auto` means "translate into the opposite language" for `translate`, and
-"explain in Chinese" for `explain` (an explanation is for the reader, not for a
-language pair). The host answers `{ ok, task, target, auto, text }`.
-## Vocabulary book
+## 朗读
 
-`收藏` on the card appends the pair to
+每栏右侧的 `▶` 朗读该栏内容；复习窗里单词旁的 `▶` 朗读「单词 + 例句」——但**只有在你点了「看答案」之后**才会带上例句，否则等于剧透。
 
-```
-%APPDATA%\dsh-external-toolbox\vocab.jsonl     one JSON object per line
-%APPDATA%\dsh-external-toolbox\生词本.md        readable mirror, rebuilt on every save
-```
+用的是 Edge 的在线神经网络音色（中文 晓晓、英文 Aria），比系统自带音色自然。没有网络时自动退回系统音色，不会因为读不出来把卡片卡住。
 
-The helper forwards it as a `{"type":"vocab", word, translation, lang, task}` line
-on stdout; the host writes the files. The same book is readable over HTTP:
+## 什么情况下不弹
 
-```
-GET /toolbox/vocab                          -> { ok, count, file, entries }
-GET /toolbox/vocab?word=&translation=&lang= -> { ok, count }   (saves one pair)
-```
+- **终端窗口里不弹**：终端里的复制键是 Ctrl+C，等于中断命令，所以工具条在那里直接放弃，而不是往你的 shell 里打 `^C`。想拿走终端里的文字，用 `Ctrl+Insert`（只复制、不打断）。
+- **PCB / 芯片设计软件里不弹**：KiCad、Altium、Allegro、Vivado 等选中的是元件而不是文字，橡皮筋框选不会打扰你；只有真正的文字选区才会弹。拖动元件时软件会把元件复制到剪贴板，这种情况也被忽略。
+- **太短的东西不弹**：一两个字符、或像 `R12`、`U1` 这样的裸位号会被当作噪声跳过。
+- **截图工具正在用时**：PixPin、Snipaste 一类正在截图/标注时不会去碰剪贴板，不影响你截图。
 
-Saving the same word twice within a minute is treated as a double click and
-ignored.
+## 快捷键
 
-## Reading the translation aloud
+正常情况下不需要快捷键。万一自动弹出没反应，可以按 **Ctrl+Alt+Q** 手动触发一次。
 
-The host half is not involved: after a successful `translate` the helper speaks
-the result with `System.Speech`. It picks a `zh-` or `en-` voice when the machine
-has one and stays silent otherwise (`explain` never speaks). Pass `-NoSpeak` to
-the helper for tests.
-## Reviewing (spaced repetition)
+## 开机与退出
 
-`生词` on the pill (and in the card header) opens the review window: it shows one
-word, you recall the meaning yourself, `看答案` reveals it, then grade it
-`忘了 / 模糊 / 记得`. The word is written back with its next due date.
+插件随 DSH 启动，在后台常驻一个小助手进程；DSH 退出时它也会自动退出，不会残留占着热键。
 
-```
-GET /toolbox/review                                   -> next due card
-GET /toolbox/review?word=<w>&grade=again|hard|good    -> grade it, next card
-```
+## 卸载
 
-Scheduling keeps three numbers per word (`interval` days, `ease`, `reps`):
-
-| grade | next due | effect |
-| --- | --- | --- |
-| `again` | +10 minutes | `reps = 0`, `ease - 0.2` |
-| `hard` | +1 day | `ease - 0.15` |
-| `good` | `reps = 1 → 1d`, `2 → 3d`, else `interval × ease` (max 120d) | `reps + 1` |
-
-Only words whose `due` has passed come up; when nothing is due the window says
-so and shows the total. The JSONL stays append-only (the latest record per word
-wins), so the file remains diff-able and the Markdown mirror is always the
-freshest view.
-### Richer entries
-
-Saving a word takes the translation the card already has, then asks the model for
-a compact dictionary entry in the background and appends it to the same record:
-
-```
-词性: n.
-释义: 意外发现美好事物的运气; 机缘巧合
-例句: Meeting her was pure serendipity.
-译文: 遇见她纯属机缘巧合。
-搭配: serendipitous (adj.); by serendipity
-```
-
-The review window shows that when you reveal the answer, the Markdown mirror
-gets one section per word, and words saved before this existed are backfilled the
-first time they come up in review. No model selected means no detail — the card
-just keeps the plain translation.
-
-The `文件` button opens the Markdown with notepad: `.md` has no default handler on
-many machines, and a silent failure there looked like "the file cannot be opened".
-### Picking single words out of a sentence
-
-Select a word inside the source pane and press `收藏`: the helper sends that word
-with the full sentence as `context`, so the entry is about the word *as used
-there*. With no selection it saves the whole capture, as before.
-
-The review window shows the sentence under the word and its `▶` reads the word
-plus the example line from the enriched entry, so a card is one click away from
-being heard.
-## Speaking
-
-The `▶` next to each pane, and the one next to the word in the review window,
-speak the text. Windows' built-in SAPI voices (Huihui / Zira) sound robotic, so
-speech goes through the Edge neural endpoint instead:
-
-```
-node pkg/tools/say.mjs --text-file <in.txt> <out.mp3> [voice]
-```
-
-`msedge-tts` is a normal dependency of this package (no API key needed); the
-helper writes the text to a temp file, runs that script, and plays the mp3 with
-WPF's `MediaPlayer`. Voices: `zh-CN-XiaoxiaoNeural` for Chinese,
-`en-US-AriaNeural` for everything else. If node, the module, or the network is
-missing, it falls back to SAPI and says nothing about it — a silent failure to
-speak should never block the card.
-
-In the review window the example sentence is only read **after** you reveal the
-answer: hearing it early would give the meaning away.
-### Why the terminal never sees ^C
-
-When UIA cannot report a selection, the helper falls back to copying: it clears
-the clipboard, sends Ctrl+C, and reads the result back. In a terminal Ctrl+C is
-an interrupt, so that fallback painted `^C` into the user's shell — and since a
-copy can never succeed there, every gesture retried it.
-
-Two guards now apply before any clipboard poke:
-
-1. `Test-KeyboardSurface` — true for console windows (`ConsoleWindowClass`,
-   `CASCADIA_HOSTING_WINDOW_CLASS`, mintty), terminal processes (`WindowsTerminal`,
-   `conhost`, `cmd`, `powershell`, `pwsh`, `bash`, `wsl`, `wt`), and for the
-   `xterm-helper-textarea` that xterm.js focuses inside VS Code / VS Code forks.
-   Selection capture simply gives up there rather than interrupting the shell.
-2. A 3 second cooldown (`$script:clipBlockedUntil`) after a failed copy, so the
-   gesture retries do not fire another Ctrl+C.
-
-`-SurfaceTest` prints what the guard sees for the window in front:
-
-```
-{"proc":"Doubao","class":"Chrome_WidgetWin_1","console":false,"keyboard":false,...}
-```
-### Copying
-
-The pill's `复制` puts the captured selection on the clipboard and closes the
-pill — useful when the text lives in an app that copies awkwardly, and the only
-way to get it out is to paste it somewhere else.
-
-Inside a terminal the copy chord changes: `Ctrl+C` is an interrupt there, so the
-helper sends `Ctrl+Insert` instead (a copy binding that never reaches the shell).
-When the terminal hides its selection from UI Automation and that chord still
-produces nothing, capture gives up and the 3 second cooldown keeps further
-gestures from poking the shell.
-## Why there are almost no dependencies
-
-The only runtime dependency is `ws`. Speech uses Edge's online voices through
-`tools/say.mjs`, with the `Sec-MS-GEC` query token computed in
-`tools/sec-ms-gec.mjs` (ported from `msedge-tts`, MIT — see
-`tools/LICENSE-msedge-tts.txt`).
-
-That vendoring is deliberate: `msedge-tts` (and any package with an
-`install`/`preinstall`/`postinstall` script) makes `dsh plugin add` fail. The
-plugin manager runs pnpm with build scripts disabled, pnpm reports
-`ERR_PNPM_IGNORED_BUILDS`, pnpm exits 1, and the marketplace surfaces it as
-`安装失败·API 200`. `ws` ships no scripts, so installs stay clean.
-### When the pill stays quiet
-
-Two guards keep object-picking out of the way:
-
-- **Editors that select objects, not text** — `pcbnew`, `eeschema`, `kicad`,
-  `altium`, `dxp`, `pads`, `allegro`, `proteus`, `vivado`, `quartus` and friends
-  are listed in `$script:QUIET_PROCS`; a rubber-band there never opens the pill.
-- **Selections that are not text** — anything shorter than 3 characters, with
-  fewer than two letters, or shaped like a bare reference designator (`R12`,
-  `U1`) is ignored.
-
-`-FilterTest` prints the verdict for a set of sample strings, useful when tuning
-the heuristic.
-### Moving objects vs selecting text
-
-Dragging a symbol in KiCad ends with the app copying that symbol to the
-clipboard, so the clipboard fallback used to hand us a paragraph of "text" and
-pop the pill on every component move. Inside an object-picking editor only a
-real UI Automation selection counts now; the clipboard fallback stays disabled
-there (other apps keep it, since old `EDIT` controls have no `TextPattern`).
-
-Log line when it declines: `auto skip quiet clipboard app=<proc> chars=<n>`.
+在 DSH 的插件管理里卸载即可。生词本文件不会被删除，需要的话手动去 `%APPDATA%\dsh-external-toolbox` 取走。

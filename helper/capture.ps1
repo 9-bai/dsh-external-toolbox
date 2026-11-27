@@ -53,6 +53,7 @@ param(
   # CardTest only: keep the machine quiet.
   [switch]$SurfaceTest,
   [switch]$FilterTest,
+  [switch]$PdfTest,
   [switch]$NoSpeak
 )
 
@@ -1003,10 +1004,12 @@ function Get-ClipboardSelectionText {
   $hadText = $false
   try { $previous = Get-Clipboard -Raw -ErrorAction SilentlyContinue; $hadText = $true } catch { $previous = $null }
 
-  # Clear first: a second selection of the same text must still look like a copy.
-  if (-not $NoRestoreClipboard) {
-    try { Set-Clipboard -Value "" } catch { }
-  }
+  # Park a unique marker on the clipboard instead of clearing it: clearing can
+  # fail while another process holds the clipboard, and then a stale copy from
+  # an earlier selection would look like a fresh one. Only a value that differs
+  # from both the marker and the old clipboard counts as a real copy.
+  $marker = "dsh-toolbox-" + [guid]::NewGuid().ToString("N")
+  try { Set-Clipboard -Value $marker } catch { }
 
   # A single Ctrl+C is often swallowed (focus still moving, app busy), so try a
   # few times before giving up; the clipboard stays cleared between attempts.
@@ -1018,14 +1021,21 @@ function Get-ClipboardSelectionText {
       Start-Sleep -Milliseconds 50
       try {
         $candidate = Get-Clipboard -Raw -ErrorAction SilentlyContinue
-        if (-not [string]::IsNullOrEmpty($candidate)) { $text = $candidate; break }
+        if ([string]::IsNullOrEmpty($candidate)) { continue }
+        # The marker is the only reliable signal: the clipboard changes only if
+        # something wrote to it, so "still the marker" means the app ignored the
+        # key. Comparing against the previous value would reject a legitimate
+        # re-copy of the same text.
+        if ($candidate -eq $marker) { continue }
+        $text = $candidate
+        break
       } catch { }
     }
   }
 
   if (-not $NoRestoreClipboard -and $hadText) {
     try {
-      if ($null -ne $previous) { Set-Clipboard -Value $previous } else { Set-Clipboard -Value "" }
+      if ($null -ne $previous) { Set-Clipboard -Value $previous } else { [System.Windows.Forms.Clipboard]::Clear() }
     } catch { }
   }
   return $text
@@ -2121,6 +2131,52 @@ function Start-GestureCapture {
 function Get-AutoSelectionText {
   $script:hb.step = "uia"
   $text = $null
+  $script:lastVia = ""
+
+  # PDF viewers hand UI Automation a whole text run instead of the selected
+  # span, so on those surfaces the clipboard copy is the accurate source. A
+  # viewer never treats Ctrl+C as an interrupt, and the clipboard is restored.
+  $isPdf = Test-PdfSurface
+  if ($isPdf) {
+    $script:hb.step = "clip-pdf"
+    # The document node knows the exact selection, so try it before poking the
+    # clipboard (a synthetic Ctrl+C is exactly what a Chromium PDF viewer may
+    # ignore, leaving a stale copy behind).
+    # Copy first: Chromium's PDF viewer does honour a synthetic Ctrl+C and the
+    # clipboard then holds exactly what it thinks is selected. The document
+    # node's TextPattern only reports the enclosing line/block, so it is kept as
+    # a last resort rather than the preferred path.
+    $text = $null
+    if ((Get-Date) -ge $script:clipBlockedUntil) {
+      try { $text = Get-ClipboardSelectionText -Keys "^c" } catch { $text = $null }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($text)) {
+      $text = $text.Trim()
+      $script:lastVia = "clipboard"
+      $head = $text.Replace("`r", " ").Replace("`n", " ")
+      if ($head.Length -gt 60) { $head = $head.Substring(0, 60) }
+      Write-Trace ("capture: pdf copy len=" + $text.Length + " text='" + $head + "'")
+      return $text
+    }
+    try { $text = Get-PdfSelectionText } catch { $text = $null }
+    if (-not [string]::IsNullOrWhiteSpace($text)) {
+      $text = $text.Trim()
+      $script:lastVia = "pdf-uia"
+      $head = $text.Replace("`r", " ").Replace("`n", " ")
+      if ($head.Length -gt 60) { $head = $head.Substring(0, 60) }
+      Write-Trace ("capture: pdf uia len=" + $text.Length + " text='" + $head + "'")
+      return $text
+    }
+    $text = $null
+    $script:clipBlockedUntil = (Get-Date).AddSeconds(1)
+    Write-Trace ("capture: pdf empty proc=" + (Get-ForegroundProcessName))
+    # UI Automation glues neighbouring labels together inside a PDF viewer
+    # ("OSCOVDD" for a selection of "OSCO"), so it is never used as a fallback
+    # there: either the copy gives the exact span, or nothing pops at all.
+    return $text
+  }
+
+  $script:hb.step = "uia"
   try {
     $focused = [System.Windows.Automation.AutomationElement]::FocusedElement
     $text = Get-UiaSelectionText -Element $focused
@@ -2135,11 +2191,7 @@ function Get-AutoSelectionText {
   } catch {
     $text = $null
   }
-  if ([string]::IsNullOrWhiteSpace($text)) {
-    $script:lastVia = ""
-  } else {
-    $script:lastVia = "uia"
-  }
+  if (-not [string]::IsNullOrWhiteSpace($text)) { $script:lastVia = "uia" }
   # Ctrl+C copies in an editor but interrupts a shell, so terminals get
   # Ctrl+Insert: the copy chord that never reaches the program. When even that
   # yields nothing we stay quiet for a few seconds instead of poking again.
@@ -2199,6 +2251,90 @@ function Test-KeyboardSurface {
       $fc = [string]$focused.Current.ClassName
       $fn = [string]$focused.Current.Name
       if ($fc -like "*xterm*" -or $fn -like "*xterm*") { return $true }
+    }
+  } catch { }
+  return $false
+}
+
+
+# PDF viewers report their selection through UI Automation as coarse text runs:
+# one label in a block diagram comes back as "OSCOVDD", the neighbouring labels
+# glued together. A clipboard copy there is exact and Ctrl+C is harmless in a
+# viewer, so those surfaces capture through the clipboard first.
+$script:PDF_PROCS = @("acrobat", "acrord32", "acrobatreader", "foxitreader", "foxitpdfreader", "sumatrapdf", "pdfxcview", "nitropdf", "pdfelement", "wps", "wpsoffice", "et")
+$script:BROWSER_PROCS = @("msedge", "chrome", "brave", "vivaldi", "opera", "firefox", "chromium", "360se", "360chromex", "qqbrowser")
+
+# A PDF viewer exposes one Document node literally named "PDF Document"; its
+# TextPattern carries the real selection, while the focused text-run node only
+# reports its own whole run (which is why plain UIA returned glued labels like
+# "OSCOVDD" for a selection of "OSCO").
+function Get-PdfSelectionText {
+  $fg = [QuickAsk.Native]::GetForegroundWindow()
+  if ($fg -eq [IntPtr]::Zero) { return $null }
+  $root = $null
+  try { $root = [System.Windows.Automation.AutomationElement]::FromHandle($fg) } catch { $root = $null }
+  $doc = $null
+  if ($null -ne $root) {
+    try {
+      $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, "PDF Document")
+      $doc = $root.FindFirst([System.Windows.Automation.TreeWalker]::ControlViewWalker, $cond)
+    } catch { $doc = $null }
+  }
+  if ($null -eq $doc) {
+    try {
+      $node = [System.Windows.Automation.AutomationElement]::FocusedElement
+      for ($i = 0; $i -lt 8 -and $null -ne $node; $i++) {
+        if (([string]$node.Current.Name) -match '(?i)pdf document') { $doc = $node; break }
+        $node = [System.Windows.Automation.TreeWalker]::ControlViewWalker.GetParent($node)
+      }
+    } catch { }
+  }
+  if ($null -eq $doc) { return $null }
+  try {
+    $tp = [System.Windows.Automation.TextPattern]$doc.GetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern)
+    $ranges = $tp.GetSelection()
+    if ($null -eq $ranges -or $ranges.Count -eq 0) { return $null }
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($r in $ranges) { [void]$sb.Append($r.GetText(-1)) }
+    $out = $sb.ToString().Trim()
+    if ([string]::IsNullOrWhiteSpace($out)) { return $null }
+    return $out
+  } catch { return $null }
+}
+function Test-PdfSurface {
+  $proc = (Get-ForegroundProcessName)
+  if ([string]::IsNullOrWhiteSpace($proc)) { return $false }
+  $name = $proc.ToLowerInvariant()
+  foreach ($known in $script:PDF_PROCS) {
+    if ($name -like "*$known*") { return $true }
+  }
+  $isBrowser = $false
+  foreach ($known in $script:BROWSER_PROCS) {
+    if ($name -like "*$known*") { $isBrowser = $true; break }
+  }
+  if (-not $isBrowser) { return $false }
+  # A browser only counts while it is actually showing a PDF: the window title
+  # ends in .pdf, or the focused element lives inside the PDF viewer.
+  try {
+    $hwnd = [QuickAsk.Native]::GetForegroundWindow()
+    $len = [QuickAsk.Native]::GetWindowTextLengthW($hwnd)
+    if ($len -gt 0) {
+      $sb = New-Object System.Text.StringBuilder ($len + 2)
+      [void][QuickAsk.Native]::GetWindowTextW($hwnd, $sb, $sb.Capacity)
+      if ($sb.ToString() -match '\.pdf') { return $true }
+    }
+    $focused = [System.Windows.Automation.AutomationElement]::FocusedElement
+    if ($null -ne $focused) {
+      if (([string]$focused.Current.ClassName) -match 'pdf') { return $true }
+      # Chromium's viewer marks its document node with the name "PDF Document";
+      # the tab title is the PDF's own title, so it cannot be used here.
+      $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+      $node = $focused
+      for ($i = 0; $i -lt 6 -and $null -ne $node; $i++) {
+        $name = [string]$node.Current.Name
+        if ($name -match '(?i)pdf document' -or $name -match '\.pdf$') { return $true }
+        $node = $walker.GetParent($node)
+      }
     }
   } catch { }
   return $false
@@ -2924,6 +3060,17 @@ if ($FilterTest) {
   $samples = @("R12", "U1", "1", "pcb", "a b", "C3 10uF", "Hello world", "Rain_Total_mm", "--", "12", "VCC", "See note 4", "Net- (U2.5A)")
   foreach ($sample in $samples) {
     Write-Json @{ type = "filter"; text = $sample; show = (Test-WorthShowing $sample); prose = (Test-ProseLike $sample); quiet = (Test-QuietApp); app = (Get-ForegroundProcessName) }
+  }
+  exit 0
+}
+
+if ($PdfTest) {
+  # Is the surface in front a PDF viewer? Those capture through the clipboard.
+  Write-Json @{
+    type = "pdf"
+    proc = (Get-ForegroundProcessName)
+    class = (Get-ForegroundClassName)
+    pdf = (Test-PdfSurface)
   }
   exit 0
 }

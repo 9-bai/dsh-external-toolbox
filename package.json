@@ -1,6 +1,6 @@
 {
   "name": "dsh-external-toolbox",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Selection capture for DeepSeek Harness, anywhere on Windows: one gesture picks up the text you just selected in any application and offers translate, explain, quote-into-DSH, save-to-vocabulary and copy in a floating card that never steals focus.",
   "keywords": [
     "deepseek",

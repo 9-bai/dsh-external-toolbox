@@ -1009,7 +1009,18 @@ function Get-ClipboardSelectionText {
   # an earlier selection would look like a fresh one. Only a value that differs
   # from both the marker and the old clipboard counts as a real copy.
   $marker = "dsh-toolbox-" + [guid]::NewGuid().ToString("N")
-  try { Set-Clipboard -Value $marker } catch { }
+  $seeded = $false
+  for ($seedTry = 0; $seedTry -lt 3 -and -not $seeded; $seedTry++) {
+    try { Set-Clipboard -Value $marker } catch { }
+    try { $seeded = ((Get-Clipboard -Raw) -eq $marker) } catch { $seeded = $false }
+    if (-not $seeded) { Start-Sleep -Milliseconds 40 }
+  }
+  if (-not $seeded) {
+    # Another process kept the clipboard, so nothing here can be trusted: the
+    # old value would look like a fresh copy.
+    Write-Trace "capture: clipboard marker blocked"
+    return $null
+  }
 
   # A single Ctrl+C is often swallowed (focus still moving, app busy), so try a
   # few times before giving up; the clipboard stays cleared between attempts.
@@ -2146,9 +2157,23 @@ function Get-AutoSelectionText {
     # clipboard then holds exactly what it thinks is selected. The document
     # node's TextPattern only reports the enclosing line/block, so it is kept as
     # a last resort rather than the preferred path.
+    # A viewer finalises its text-layer selection a moment after the drag ends,
+    # so an early copy can catch a fragment ("uct dat" for "Product data
+    # sheet"). Copy a few times and keep the longest span.
     $text = $null
     if ((Get-Date) -ge $script:clipBlockedUntil) {
-      try { $text = Get-ClipboardSelectionText -Keys "^c" } catch { $text = $null }
+      $best = $null
+      for ($attempt = 0; $attempt -lt 3; $attempt++) {
+        if ($attempt -gt 0) { Start-Sleep -Milliseconds 350 }
+        $try = $null
+        try { $try = Get-ClipboardSelectionText -Keys "^c" } catch { $try = $null }
+        if ([string]::IsNullOrWhiteSpace($try)) { continue }
+        $try = $try.Trim()
+        Write-Trace ("capture: pdf attempt " + [string]$attempt + " len=" + $try.Length)
+        if ($null -eq $best -or $try.Length -gt $best.Length) { $best = $try }
+        if ($attempt -ge 1 -and $null -ne $best -and $try.Length -eq $best.Length) { break }
+      }
+      $text = $best
     }
     if (-not [string]::IsNullOrWhiteSpace($text)) {
       $text = $text.Trim()
@@ -2156,15 +2181,6 @@ function Get-AutoSelectionText {
       $head = $text.Replace("`r", " ").Replace("`n", " ")
       if ($head.Length -gt 60) { $head = $head.Substring(0, 60) }
       Write-Trace ("capture: pdf copy len=" + $text.Length + " text='" + $head + "'")
-      return $text
-    }
-    try { $text = Get-PdfSelectionText } catch { $text = $null }
-    if (-not [string]::IsNullOrWhiteSpace($text)) {
-      $text = $text.Trim()
-      $script:lastVia = "pdf-uia"
-      $head = $text.Replace("`r", " ").Replace("`n", " ")
-      if ($head.Length -gt 60) { $head = $head.Substring(0, 60) }
-      Write-Trace ("capture: pdf uia len=" + $text.Length + " text='" + $head + "'")
       return $text
     }
     $text = $null
@@ -2335,6 +2351,14 @@ function Test-PdfSurface {
         if ($name -match '(?i)pdf document' -or $name -match '\.pdf$') { return $true }
         $node = $walker.GetParent($node)
       }
+    }
+    # Focus can sit on the toolbar or the tab strip; the viewer itself is then
+    # only visible further down the window's tree, so look there as well.
+    $win = [System.Windows.Automation.AutomationElement]::FromHandle([QuickAsk.Native]::GetForegroundWindow())
+    if ($null -ne $win) {
+      $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, "PDF Document")
+      $doc = $win.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $cond)
+      if ($null -ne $doc) { return $true }
     }
   } catch { }
   return $false

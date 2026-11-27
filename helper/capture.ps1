@@ -53,7 +53,9 @@ param(
   # CardTest only: keep the machine quiet.
   [switch]$SurfaceTest,
   [switch]$FilterTest,
-  [switch]$NoSpeak
+  [switch]$NoSpeak,
+  [string]$Word = "",
+  [switch]$WordTest
 )
 
 $ErrorActionPreference = "Stop"
@@ -1590,6 +1592,14 @@ function New-Card {
   $script:head = $head
   $script:grid = $grid
   $script:txtSrc = $txtSrc
+  $txtSrc.Add_MouseUp({
+    $sel = [string]$script:txtSrc.SelectedText
+    if ([string]::IsNullOrWhiteSpace($sel)) { return }
+    $sel = $sel.Trim()
+    # Only a single word: a phrase belongs to translate/explain.
+    if ($sel.Length -lt 2 -or $sel.Length -gt 40 -or $sel -match "\s") { return }
+    try { Invoke-WordLookup $sel } catch { Write-Trace ("word lookup error: " + $_.Exception.Message) }
+  })
   $script:divider = $divider
   $script:txtDst = $txtDst
   $script:status = $status
@@ -1999,6 +2009,7 @@ function Show-Card {
 
 function Hide-Card {
   Hide-LangMenu
+  Hide-WordPopup
   if ($null -ne $script:card) { $script:card.Hide() }
   # A hidden card still has a rect: stop swallowing the wheel over it.
   if ($null -ne $script:mouseWatcher) {
@@ -2566,6 +2577,175 @@ $script:reviewTotal = 0
 
 $script:reviewForm = $null
 
+# ------------------------------------------------------- word lookup popup
+# Selecting a single word in the source pane is a "what does this mean" gesture:
+# ask the host for the dictionary lines plus the fragment of the translation that
+# renders it, then show it in a small panel beside the card. Nothing is sent for
+# multi-word selections (that is what translate/explain are for).
+$script:wordPop = $null
+
+function Get-WordUrl {
+  # Derive from the bare translate URL: Get-TaskUrl already appends query
+  # parameters, and a trailing "/translate?to=..." would not match a suffix test.
+  $base = $script:TranslateUrl
+  if ([string]::IsNullOrWhiteSpace($base)) { return "" }
+  if ($base -match "/translate") { $base = $base -replace "/translate.*$", "/word" }
+  return $base
+}
+
+function New-WordPopup {
+  $f = New-Object QuickAsk.CardForm
+  $f.Text = "dsh-external-toolbox-word"
+  $f.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
+  $f.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
+  $f.TopMost = $true
+  $f.ShowInTaskbar = $false
+  $f.BackColor = $CARD_BG
+  $f.Font = Fs 12
+  $f.ClientSize = New-Object System.Drawing.Size((Sz 430), (Sz 190))
+
+  # Docking is resolved in reverse control order, so the Fill body goes in
+  # first: the header and the match line then dock around the space left over.
+  $body = New-Object System.Windows.Forms.TextBox
+  $body.Multiline = $true
+  $body.ReadOnly = $true
+  $body.BorderStyle = [System.Windows.Forms.BorderStyle]::None
+  $body.BackColor = $CARD_BG
+  $body.ForeColor = $INK
+  $body.Font = Fs 12.5
+  $body.Dock = [System.Windows.Forms.DockStyle]::Fill
+  $body.ScrollBars = [System.Windows.Forms.ScrollBars]::None
+  $body.TabStop = $false
+
+  # A padding host keeps the text off the window edge; the TextBox itself has
+  # no usable Padding property.
+  $pad = New-Object System.Windows.Forms.Panel
+  $pad.Dock = [System.Windows.Forms.DockStyle]::Fill
+  $pad.BackColor = $CARD_BG
+  $pad.Padding = New-Object System.Windows.Forms.Padding((Sz 14), (Sz 6), (Sz 14), (Sz 6))
+  $body.Dock = [System.Windows.Forms.DockStyle]::Fill
+  $pad.Controls.Add($body)
+  $f.Controls.Add($pad)
+
+  $head = New-Object System.Windows.Forms.Panel
+  $head.Dock = [System.Windows.Forms.DockStyle]::Top
+  $head.Height = (Sz 42)
+  $head.BackColor = $BAR_BG
+  $f.Controls.Add($head)
+
+  $word = New-Object System.Windows.Forms.Label
+  $word.Text = ""
+  $word.AutoSize = $true
+  $word.Dock = [System.Windows.Forms.DockStyle]::None
+  $word.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+  $word.Location = New-Object System.Drawing.Point((Sz 14), (Sz 2))
+  $word.Font = FsB 15
+  $word.ForeColor = $ACCENT
+  $word.BackColor = $BAR_BG
+  $head.Controls.Add($word)
+
+  # dictionary IPA, shown dim under the headword
+  $ipa = New-Object System.Windows.Forms.Label
+  $ipa.Text = ""
+  $ipa.AutoSize = $true
+  $ipa.Font = Fs 11
+  $ipa.ForeColor = $INK_DIM
+  $ipa.BackColor = $BAR_BG
+  $ipa.Location = New-Object System.Drawing.Point((Sz 14), (Sz 23))
+  $ipa.Visible = $false
+  $head.Controls.Add($ipa)
+
+  $match = New-Object System.Windows.Forms.Label
+  $match.Text = ""
+  $match.AutoSize = $false
+  $match.Dock = [System.Windows.Forms.DockStyle]::Bottom
+  $match.Height = (Sz 26)
+  $match.TextAlign = [System.Drawing.ContentAlignment]::MiddleLeft
+  $match.Padding = New-Object System.Windows.Forms.Padding((Sz 14), 0, (Sz 14), 0)
+  $match.Font = Fs 12.5
+  $match.ForeColor = $OK_INK
+  $match.BackColor = $CARD_BG
+  $match.Visible = $false
+  $f.Controls.Add($match)
+
+  $script:wordPop = $f
+  $script:wordPopBody = $body
+  $script:wordPopWord = $word
+  $script:wordPopIpa = $ipa
+  $script:wordPopMatch = $match
+}
+function Hide-WordPopup {
+  if ($null -ne $script:wordPop) { $script:wordPop.Hide() }
+}
+
+function Show-WordPopup {
+  param([string]$Word, [string]$Entry, [string]$Match, [string]$Ipa = "")
+  if ($null -eq $script:wordPop) { New-WordPopup }
+  $lines = @()
+  foreach ($line in ($Entry -split "`n")) {
+    $trimmed = $line.Trim()
+    if ($trimmed -ne "") { $lines += $trimmed }
+  }
+  $script:wordPopWord.Text = $Word
+  $script:wordPopIpa.Text = $Ipa
+  $script:wordPopIpa.Visible = ($Ipa -ne "")
+  $script:wordPopBody.Text = ($lines -join "`r`n")
+  # Control.Visible reads false while the form is still hidden, so remember the
+  # intent in a local and drive both the label and the height from it.
+  $hasMatch = ($Match -ne "")
+  if ($hasMatch) {
+    $script:wordPopMatch.Text = (U 0x8BD1, 0x6587, 0x5BF9, 0x5E94) + ": " + $Match
+    $script:wordPopMatch.Visible = $true
+  } else {
+    $script:wordPopMatch.Visible = $false
+  }
+  # Measure the wrapped text with the body's own font: GetPositionFromCharIndex
+  # reports stale coordinates until the control is laid out at its final size.
+  # One design row per dictionary line: measured heights from TextRenderer are
+  # physical pixels and keep disagreeing with the TextBox's own spacing.
+  $rows = [Math]::Max(3, [Math]::Min(14, $lines.Count))
+  $need = ($rows * (Sz 20)) + (Sz 12)
+  $height = (Sz 34) + $need
+  if ($hasMatch) { $height += (Sz 26) }
+  $script:wordPop.ClientSize = New-Object System.Drawing.Size((Sz 430), $height)
+  Set-CardRegion $script:wordPop
+
+  $cp = New-Object QuickAsk.POINT
+  [void][QuickAsk.Native]::GetCursorPos([ref]$cp)
+  $origin = New-Object System.Drawing.Point($cp.X, $cp.Y)
+  $wa = [System.Windows.Forms.Screen]::FromPoint($origin).WorkingArea
+  $x = $cp.X + (Sz 12)
+  $y = $cp.Y + (Sz 18)
+  if (($x + $script:wordPop.Width) -gt $wa.Right) { $x = $wa.Right - $script:wordPop.Width - (Sz 8) }
+  if (($y + $script:wordPop.Height) -gt $wa.Bottom) { $y = $wa.Bottom - $script:wordPop.Height - (Sz 8) }
+  if ($x -lt ($wa.Left + (Sz 8))) { $x = $wa.Left + (Sz 8) }
+  if ($y -lt ($wa.Top + (Sz 8))) { $y = $wa.Top + (Sz 8) }
+  $script:wordPop.Location = New-Object System.Drawing.Point($x, $y)
+  $script:wordPop.Show()
+}
+function Invoke-WordLookup {
+  param([string]$Word)
+  $url = Get-WordUrl
+  if ([string]::IsNullOrWhiteSpace($url)) { return }
+  $sentence = $script:srcText
+  if ($sentence.Length -gt 600) { $sentence = $sentence.Substring(0, 600) }
+  $translation = $script:dstText
+  if ($translation.Length -gt 600) { $translation = $translation.Substring(0, 600) }
+  $full = $url + "?w=" + [uri]::EscapeDataString($Word) +
+    "&s=" + [uri]::EscapeDataString($sentence) +
+    "&t=" + [uri]::EscapeDataString($translation)
+  $data = Invoke-ToolboxJson $full
+  if ($null -eq $data -or $data.ok -ne $true) {
+    Write-Trace ("word lookup failed: " + $Word)
+    return
+  }
+  Show-WordPopup -Word ([string]$data.word) -Entry ([string]$data.entry) -Match ([string]$data.match) -Ipa ([string]$data.ipa)
+  Write-Trace ("word popup: " + $Word + " match=" + [string]$data.match)
+  # Selecting the matched fragment inside the translation pane would never be
+  # visible: the card refuses focus (WS_EX_NOACTIVATE), and a read-only TextBox
+  # only paints its selection while focused. The fragment is shown in the popup
+  # instead, and "copy" already prefers the selection when one exists.
+}
 function New-ReviewForm {
   $f = New-Object QuickAsk.CardForm
   $f.Text = "dsh-external-toolbox-review"
@@ -2621,16 +2801,27 @@ function New-ReviewForm {
   $wordLabel.Font = FsB 26
   $wordLabel.ForeColor = $INK
   $wordLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
-  $wordLabel.Location = New-Object System.Drawing.Point((Sz 16), (Sz 42))
-  $wordLabel.Size = New-Object System.Drawing.Size((Sz 320), (Sz 48))
+  $wordLabel.Location = New-Object System.Drawing.Point((Sz 16), (Sz 38))
+  $wordLabel.Size = New-Object System.Drawing.Size((Sz 320), (Sz 44))
   $f.Controls.Add($wordLabel)
+
+  # dictionary IPA sits right under the headword
+  $ipaLabel = New-Object System.Windows.Forms.Label
+  $ipaLabel.Text = ""
+  $ipaLabel.Font = Fs 12
+  $ipaLabel.ForeColor = $INK_DIM
+  $ipaLabel.TextAlign = [System.Drawing.ContentAlignment]::MiddleCenter
+  $ipaLabel.Location = New-Object System.Drawing.Point((Sz 16), (Sz 80))
+  $ipaLabel.Size = New-Object System.Drawing.Size((Sz 388), (Sz 18))
+  $ipaLabel.Visible = $false
+  $f.Controls.Add($ipaLabel)
 
   $ctxLabel = New-Object System.Windows.Forms.Label
   $ctxLabel.Text = ""
   $ctxLabel.Font = Fs 11
   $ctxLabel.ForeColor = $INK_DIM
   $ctxLabel.TextAlign = [System.Drawing.ContentAlignment]::TopLeft
-  $ctxLabel.Location = New-Object System.Drawing.Point((Sz 16), (Sz 92))
+  $ctxLabel.Location = New-Object System.Drawing.Point((Sz 16), (Sz 100))
   $ctxLabel.Size = New-Object System.Drawing.Size((Sz 388), (Sz 30))
   $f.Controls.Add($ctxLabel)
 
@@ -2667,7 +2858,7 @@ function New-ReviewForm {
   $meanLabel.Font = Fs 13
   $meanLabel.ForeColor = $OK_INK
   $meanLabel.TextAlign = [System.Drawing.ContentAlignment]::TopLeft
-  $meanLabel.Location = New-Object System.Drawing.Point((Sz 16), (Sz 126))
+  $meanLabel.Location = New-Object System.Drawing.Point((Sz 16), (Sz 134))
   $meanLabel.Size = New-Object System.Drawing.Size((Sz 388), (Sz 112))
   $meanLabel.Visible = $false
   $f.Controls.Add($meanLabel)
@@ -2725,6 +2916,7 @@ function New-ReviewForm {
   $f.MakeDraggable($heading)
 
   $script:reviewWordLabel = $wordLabel
+  $script:reviewIpaLabel = $ipaLabel
   $script:reviewCtxLabel = $ctxLabel
   $script:reviewSay = $sayWord
   $script:reviewMeaningLabel = $meanLabel
@@ -2772,6 +2964,8 @@ function Update-ReviewCard {
     $script:reviewMeaningLabel.Visible = $false
     $script:reviewMeaningLabel.Text = ""
     $script:reviewCtxLabel.Text = ""
+  $script:reviewIpaLabel.Text = ""
+  $script:reviewIpaLabel.Visible = $false
     return
   }
   $script:reviewWord = [string]$item.word
@@ -2783,6 +2977,9 @@ function Update-ReviewCard {
   $script:reviewMeaningLabel.Text = ""
   $script:reviewMeaningLabel.Visible = $false
   $script:reviewWordLabel.Text = $script:reviewWord
+  $ipaText = [string]$item.ipa
+  $script:reviewIpaLabel.Text = $ipaText
+  $script:reviewIpaLabel.Visible = ($ipaText -ne "")
   $script:reviewCtxLabel.Text = $script:reviewContext
   $dot = [string][char]0x00B7
   $script:reviewStatus.Text = (U 0x4ECA, 0x5929, 0x8FD8, 0x6709) + " " + [string]$script:reviewDue + " " + (U 0x4E2A) + "  " + $dot + "  " + (U 0x5171) + " " + [string]$script:reviewTotal + " " + (U 0x4E2A)
@@ -3182,6 +3379,30 @@ if ($ReviewTest) {
   $script:reviewForm.Close()
   exit 0
 }
+if ($WordTest) {
+  # Renders the word panel against whatever -TranslateUrl points at (the mock
+  # answers /toolbox/word), so the layout can be checked without a live model.
+  $script:srcText = "Address locations 09h through 0Ch contain alarm registers, which define the conditions for an alarm."
+  $script:dstText = ""
+  $w = if ($Word -ne "") { $Word } else { "conditions" }
+  Invoke-WordLookup $w
+  for ($i = 0; $i -lt 20; $i++) { [System.Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 40 }
+  if ($ShotPath -ne "" -and $null -ne $script:wordPop) {
+    $script:wordPop.Refresh()
+    [System.Windows.Forms.Application]::DoEvents()
+    Start-Sleep -Milliseconds 150
+    $rect = $script:wordPop.Bounds
+    $bmp = New-Object System.Drawing.Bitmap -ArgumentList $rect.Width, $rect.Height
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.CopyFromScreen($rect.Location, [System.Drawing.Point]::Empty, $rect.Size)
+    $g.Dispose()
+    $bmp.Save($ShotPath, [System.Drawing.Imaging.ImageFormat]::Png)
+    $bmp.Dispose()
+    Write-Json @{ type = "shot"; path = $ShotPath; word = $w; body = $script:wordPopBody.Text; ipa = $script:wordPopIpa.Text; ipaVisible = $script:wordPopIpa.Visible; ipaBounds = [string]$script:wordPopIpa.Bounds }
+  }
+  if ($null -ne $script:wordPop) { $script:wordPop.Close() }
+  exit 0
+}
 if ($CardTest) {
   New-Card
   $script:lastId = "cardtest"
@@ -3328,7 +3549,9 @@ if (-not $NoAuto) {
         $onCard = ($null -ne $script:card -and $script:card.Visible -and $script:card.Bounds.Contains($pt))
         $onBar = ($null -ne $script:bar -and $script:bar.Visible -and $script:bar.Bounds.Contains($pt))
         $onMenu = ($null -ne $script:langMenu -and $script:langMenu.Visible -and $script:langMenu.Bounds.Contains($pt))
-        if ($onMenu -or $onCard -or $onBar) {
+        $onPop = ($null -ne $script:wordPop -and $script:wordPop.Visible -and $script:wordPop.Bounds.Contains($pt))
+        if (-not $onPop) { Hide-WordPopup }
+        if ($onMenu -or $onCard -or $onBar -or $onPop) {
           # Pressing inside our own UI must not look like a selection gesture
           # (dragging the card used to pop the pill again).
           $script:ownGestureUntil = (Get-Date).AddSeconds(2)
@@ -3345,6 +3568,7 @@ if (-not $NoAuto) {
       4 {
         Write-Trace "escape"
         Hide-LangMenu
+        Hide-WordPopup
         Hide-Bar
         Hide-Card
       }
